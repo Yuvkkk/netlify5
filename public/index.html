@@ -2,31 +2,152 @@
 <html lang="zh">
 <head>
   <meta charset="UTF-8">
-  <title>文件上传</title>
+  <title>文件下载与解密（限时链接）</title>
 </head>
 <body>
-  <h1>上传文件到 Backblaze B2</h1>
-  <input type="file" id="fileInput" />
-  <button onclick="upload()">上传</button>
+  <h1>从 Backblaze B2 下载并解密文件</h1>
+  <label for="fileUrl">文件 URL:</label>
+  <input type="text" id="fileUrl" size="50" placeholder="请输入 B2 文件 URL" /><br><br>
+  <label for="keyInput">密钥 (Base64):</label>
+  <textarea id="keyInput" rows="4" cols="50" placeholder="请输入上传时保存的密钥"></textarea><br><br>
+  <button id="generateButton" onclick="generateTempLink()">生成限时链接</button>
+  <button id="downloadButton" onclick="downloadAndDecrypt()" disabled>下载并解密</button>
   <p id="result"></p>
+  <p id="tempLink"></p>
   <script>
-    async function upload() {
-      const file = document.getElementById("fileInput").files[0];
-      if (!file) return;
+    const CHUNK_SIZE = 8 * 1024 * 1024;
+    const API_TOKEN = "my-secret-token-123";
+    let tempDownloadUrl = null;
 
-      const formData = new FormData();
-      formData.append("file", file); // 直接添加文件
+    async function decryptChunk(chunk, keyBase64) {
+      const keyBuffer = Uint8Array.from(atob(keyBase64), c => c.charCodeAt(0));
+      const key = await crypto.subtle.importKey(
+        "raw",
+        keyBuffer,
+        { name: "AES-GCM" },
+        false,
+        ["decrypt"]
+      );
+      const buffer = await chunk.arrayBuffer();
+      const iv = buffer.slice(0, 12);
+      const encryptedData = buffer.slice(12);
+      const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, encryptedData);
+      return new Blob([decrypted]);
+    }
+
+    async function generateTempLink() {
+      const generateButton = document.getElementById("generateButton");
+      generateButton.disabled = true;
+      const resultElement = document.getElementById("result");
+      resultElement.textContent = "生成限时链接中...";
+
+      const fileUrl = document.getElementById("fileUrl").value.trim();
+      if (!fileUrl) {
+        resultElement.textContent = "请输入文件 URL";
+        generateButton.disabled = false;
+        return;
+      }
 
       try {
-        const response = await fetch("/.netlify/functions/upload-file", {
+        const response = await fetch("/.netlify/functions/download-file", {
           method: "POST",
-          body: formData, // 发送 FormData，不设 Content-Type（浏览器自动处理）
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${API_TOKEN}`,
+          },
+          body: JSON.stringify({ fileUrl }),
         });
+        if (!response.ok) throw new Error("生成链接失败");
         const data = await response.json();
-        document.getElementById("result").textContent = data.message;
+        tempDownloadUrl = data.tempUrl;
+        document.getElementById("tempLink").textContent = `限时链接: ${tempDownloadUrl}`;
+        document.getElementById("downloadButton").disabled = false;
+        resultElement.textContent = "限时链接生成成功！有效期 24 小时";
       } catch (error) {
-        document.getElementById("result").textContent = "上传失败: " + error.message;
+        resultElement.textContent = `生成失败: ${error.message}`;
       }
+      generateButton.disabled = false;
+    }
+
+    async function downloadAndDecrypt() {
+      const downloadButton = document.getElementById("downloadButton");
+      downloadButton.disabled = true;
+      const resultElement = document.getElementById("result");
+      resultElement.textContent = "开始下载...";
+
+      const keyBase64 = document.getElementById("keyInput").value.trim();
+      if (!tempDownloadUrl || !keyBase64) {
+        resultElement.textContent = "请先生成限时链接并输入密钥";
+        downloadButton.disabled = false;
+        return;
+      }
+
+      try {
+        const headResponse = await fetch(tempDownloadUrl, {
+          method: "HEAD",
+          headers: { "Authorization": `Bearer ${API_TOKEN}` },
+        });
+        if (!headResponse.ok) throw new Error("链接已过期或无效");
+        const fileSize = parseInt(headResponse.headers.get("Content-Length"), 10);
+        console.log(`文件大小: ${fileSize} 字节`);
+
+        const totalChunks = Math.ceil(fileSize / CHUNK_SIZE);
+        console.log(`总分片数: ${totalChunks}`);
+        const decryptedChunks = [];
+
+        for (let i = 0; i < totalChunks; i++) {
+          const start = i * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE - 1, fileSize - 1);
+          console.log(`下载分片 ${i + 1}/${totalChunks}, 范围: ${start}-${end}`);
+
+          const response = await fetch(tempDownloadUrl, {
+            headers: {
+              "Authorization": `Bearer ${API_TOKEN}`,
+              "Range": `bytes=${start}-${end}`,
+            },
+          });
+          if (!response.ok) throw new Error(`下载分片 ${i + 1} 失败`);
+
+          const data = await response.json();
+          const chunkBuffer = Uint8Array.from(atob(data.body), c => c.charCodeAt(0));
+          const chunk = new Blob([chunkBuffer]);
+          console.log(`分片 ${i + 1} 下载完成，大小: ${chunk.size} 字节`);
+
+          const chunkSize = chunkBuffer.byteLength;
+          const blockSize = 4 * 1024 * 1024 + 28;
+          const numBlocks = Math.ceil(chunkSize / blockSize);
+
+          for (let j = 0; j < numBlocks; j++) {
+            const blockStart = j * blockSize;
+            const blockEnd = Math.min(blockStart + blockSize, chunkSize);
+            const block = chunkBuffer.slice(blockStart, blockEnd);
+            if (block.byteLength < 28) continue;
+
+            const blockBlob = new Blob([block]);
+            const decryptedBlock = await decryptChunk(blockBlob, keyBase64);
+            console.log(`分片 ${i + 1} 块 ${j + 1} 解密完成，大小: ${decryptedBlock.size} 字节`);
+            decryptedChunks.push(decryptedBlock);
+          }
+        }
+
+        const decryptedFile = new Blob(decryptedChunks);
+        console.log(`解密完成，总大小: ${decryptedFile.size} 字节`);
+
+        const downloadUrl = URL.createObjectURL(decryptedFile);
+        const a = document.createElement("a");
+        a.href = downloadUrl;
+        a.download = document.getElementById("fileUrl").value.split("/").pop().replace(".enc", "");
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(downloadUrl);
+
+        resultElement.textContent = "文件下载并解密成功！";
+      } catch (error) {
+        console.error("解密失败:", error.message);
+        resultElement.textContent = `解密失败: ${error.message}`;
+      }
+      downloadButton.disabled = false;
     }
   </script>
 </body>
