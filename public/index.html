@@ -2,22 +2,21 @@
 <html lang="zh">
 <head>
   <meta charset="UTF-8">
-  <title>文件下载与解密（限时链接）</title>
+  <title>文件下载与解密</title>
 </head>
 <body>
   <h1>从 Backblaze B2 下载并解密文件</h1>
   <label for="fileUrl">文件 URL:</label>
   <input type="text" id="fileUrl" size="50" placeholder="请输入 B2 文件 URL" /><br><br>
+  <label for="tempUrl">限时链接:</label>
+  <input type="text" id="tempUrl" size="50" placeholder="请输入 B2 CLI 生成的限时链接" /><br><br>
   <label for="keyInput">密钥 (Base64):</label>
   <textarea id="keyInput" rows="4" cols="50" placeholder="请输入上传时保存的密钥"></textarea><br><br>
-  <button id="generateButton" onclick="generateTempLink()">生成限时链接</button>
-  <button id="downloadButton" onclick="downloadAndDecrypt()" disabled>下载并解密</button>
+  <button id="downloadButton" onclick="downloadAndDecrypt()">下载并解密</button>
   <p id="result"></p>
-  <p id="tempLink"></p>
   <script>
     const CHUNK_SIZE = 8 * 1024 * 1024;
     const API_TOKEN = "my-secret-token-123";
-    let tempDownloadUrl = null;
 
     async function decryptChunk(chunk, keyBase64) {
       const keyBuffer = Uint8Array.from(atob(keyBase64), c => c.charCodeAt(0));
@@ -35,55 +34,25 @@
       return new Blob([decrypted]);
     }
 
-    async function generateTempLink() {
-      const generateButton = document.getElementById("generateButton");
-      generateButton.disabled = true;
-      const resultElement = document.getElementById("result");
-      resultElement.textContent = "生成限时链接中...";
-
-      const fileUrl = document.getElementById("fileUrl").value.trim();
-      if (!fileUrl) {
-        resultElement.textContent = "请输入文件 URL";
-        generateButton.disabled = false;
-        return;
-      }
-
-      try {
-        const response = await fetch("/.netlify/functions/download-file", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${API_TOKEN}`,
-          },
-          body: JSON.stringify({ fileUrl }),
-        });
-        if (!response.ok) throw new Error("生成链接失败");
-        const data = await response.json();
-        tempDownloadUrl = data.tempUrl;
-        document.getElementById("tempLink").textContent = `限时链接: ${tempDownloadUrl}`;
-        document.getElementById("downloadButton").disabled = false;
-        resultElement.textContent = "限时链接生成成功！有效期 24 小时";
-      } catch (error) {
-        resultElement.textContent = `生成失败: ${error.message}`;
-      }
-      generateButton.disabled = false;
-    }
-
     async function downloadAndDecrypt() {
       const downloadButton = document.getElementById("downloadButton");
       downloadButton.disabled = true;
       const resultElement = document.getElementById("result");
       resultElement.textContent = "开始下载...";
 
+      const fileUrl = document.getElementById("fileUrl").value.trim();
+      const tempUrl = document.getElementById("tempUrl").value.trim();
       const keyBase64 = document.getElementById("keyInput").value.trim();
-      if (!tempDownloadUrl || !keyBase64) {
-        resultElement.textContent = "请先生成限时链接并输入密钥";
+
+      if (!fileUrl || !tempUrl || !keyBase64) {
+        resultElement.textContent = "请输入文件 URL、限时链接和密钥";
         downloadButton.disabled = false;
         return;
       }
 
       try {
-        const headResponse = await fetch(tempDownloadUrl, {
+        const proxyUrl = `/.netlify/functions/download-file?tempUrl=${encodeURIComponent(tempUrl)}`;
+        const headResponse = await fetch(proxyUrl, {
           method: "HEAD",
           headers: { "Authorization": `Bearer ${API_TOKEN}` },
         });
@@ -100,7 +69,7 @@
           const end = Math.min(start + CHUNK_SIZE - 1, fileSize - 1);
           console.log(`下载分片 ${i + 1}/${totalChunks}, 范围: ${start}-${end}`);
 
-          const response = await fetch(tempDownloadUrl, {
+          const response = await fetch(proxyUrl, {
             headers: {
               "Authorization": `Bearer ${API_TOKEN}`,
               "Range": `bytes=${start}-${end}`,
@@ -136,7 +105,7 @@
         const downloadUrl = URL.createObjectURL(decryptedFile);
         const a = document.createElement("a");
         a.href = downloadUrl;
-        a.download = document.getElementById("fileUrl").value.split("/").pop().replace(".enc", "");
+        a.download = fileUrl.split("/").pop().replace(".enc", "");
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
