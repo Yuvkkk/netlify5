@@ -16,7 +16,6 @@
   <p id="result"></p>
   <script>
     const CHUNK_SIZE = 8 * 1024 * 1024;
-    const API_TOKEN = "my-secret-token-123"; // 确保与 Netlify 环境变量一致
 
     async function decryptChunk(chunk, keyBase64) {
       const keyBuffer = Uint8Array.from(atob(keyBase64), c => c.charCodeAt(0));
@@ -50,13 +49,8 @@
         return;
       }
 
-      const proxyUrl = `/.netlify/functions/download-file?tempUrl=${encodeURIComponent(tempUrl)}`;
-
       try {
-        const headResponse = await fetch(proxyUrl, {
-          method: "HEAD",
-          headers: { "Authorization": `Bearer ${API_TOKEN}` },
-        });
+        const headResponse = await fetch(tempUrl, { method: "HEAD" });
         if (!headResponse.ok) throw new Error(`无法访问文件: ${headResponse.statusText}`);
 
         const fileSize = parseInt(headResponse.headers.get("Content-Length"), 10);
@@ -71,31 +65,25 @@
           const end = Math.min(start + CHUNK_SIZE - 1, fileSize - 1);
           console.log(`下载分片 ${i + 1}/${totalChunks}, 范围: ${start}-${end}`);
 
-          const response = await fetch(proxyUrl, {
-            headers: {
-              "Authorization": `Bearer ${API_TOKEN}`,
-              "Range": `bytes=${start}-${end}`,
-            },
+          const response = await fetch(tempUrl, {
+            headers: { "Range": `bytes=${start}-${end}` },
           });
           if (!response.ok) throw new Error(`下载分片 ${i + 1} 失败: ${response.statusText}`);
 
-          const data = await response.json();
-          const chunkBuffer = Uint8Array.from(atob(data.body), c => c.charCodeAt(0));
-          const chunk = new Blob([chunkBuffer]);
+          const chunk = await response.blob();
           console.log(`分片 ${i + 1} 下载完成，大小: ${chunk.size} 字节`);
 
-          const chunkSize = chunkBuffer.byteLength;
+          const chunkSize = chunk.size;
           const blockSize = 4 * 1024 * 1024 + 28;
           const numBlocks = Math.ceil(chunkSize / blockSize);
 
           for (let j = 0; j < numBlocks; j++) {
             const blockStart = j * blockSize;
             const blockEnd = Math.min(blockStart + blockSize, chunkSize);
-            const block = chunkBuffer.slice(blockStart, blockEnd);
-            if (block.byteLength < 28) continue;
+            const block = chunk.slice(blockStart, blockEnd);
+            if (block.size < 28) continue;
 
-            const blockBlob = new Blob([block]);
-            const decryptedBlock = await decryptChunk(blockBlob, keyBase64);
+            const decryptedBlock = await decryptChunk(block, keyBase64);
             console.log(`分片 ${i + 1} 块 ${j + 1} 解密完成，大小: ${decryptedBlock.size} 字节`);
             decryptedChunks.push(decryptedBlock);
           }
