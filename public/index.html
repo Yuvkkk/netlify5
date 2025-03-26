@@ -6,17 +6,14 @@
 </head>
 <body>
   <h1>从 Backblaze B2 下载并解密文件</h1>
-  <label for="fileUrl">文件 URL:</label>
-  <input type="text" id="fileUrl" size="50" placeholder="请输入 B2 文件 URL" /><br><br>
   <label for="tempUrl">限时链接:</label>
   <input type="text" id="tempUrl" size="50" placeholder="请输入 B2 CLI 生成的限时链接" /><br><br>
   <label for="keyInput">密钥 (Base64):</label>
   <textarea id="keyInput" rows="4" cols="50" placeholder="请输入上传时保存的密钥"></textarea><br><br>
-  <button id="downloadButton" onclick="downloadAndDecrypt()">下载并解密</button>
+  <button id="downloadButton" onclick="triggerDownload()">下载加密文件</button>
+  <input type="file" id="fileInput" accept=".enc" onchange="decryptFile()" /><br><br>
   <p id="result"></p>
   <script>
-    const CHUNK_SIZE = 8 * 1024 * 1024;
-
     async function decryptChunk(chunk, keyBase64) {
       const keyBuffer = Uint8Array.from(atob(keyBase64), c => c.charCodeAt(0));
       const key = await crypto.subtle.importKey(
@@ -33,60 +30,53 @@
       return new Blob([decrypted]);
     }
 
-    async function downloadAndDecrypt() {
-      const downloadButton = document.getElementById("downloadButton");
-      downloadButton.disabled = true;
-      const resultElement = document.getElementById("result");
-      resultElement.textContent = "开始下载...";
-
-      const fileUrl = document.getElementById("fileUrl").value.trim();
+    function triggerDownload() {
       const tempUrl = document.getElementById("tempUrl").value.trim();
-      const keyBase64 = document.getElementById("keyInput").value.trim();
+      const resultElement = document.getElementById("result");
 
-      if (!fileUrl || !tempUrl || !keyBase64) {
-        resultElement.textContent = "请输入文件 URL、限时链接和密钥";
-        downloadButton.disabled = false;
+      if (!tempUrl) {
+        resultElement.textContent = "请输入限时链接";
         return;
       }
 
+      const a = document.createElement("a");
+      a.href = tempUrl;
+      a.download = "fishfight-sprites (1).zip.enc"; // 默认文件名
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+
+      resultElement.textContent = "加密文件下载已触发，请选择文件进行解密";
+    }
+
+    async function decryptFile() {
+      const fileInput = document.getElementById("fileInput");
+      const keyBase64 = document.getElementById("keyInput").value.trim();
+      const resultElement = document.getElementById("result");
+
+      if (!fileInput.files.length || !keyBase64) {
+        resultElement.textContent = "请选择文件并输入密钥";
+        return;
+      }
+
+      resultElement.textContent = "开始解密...";
+      const file = fileInput.files[0];
+
       try {
-        const headResponse = await fetch(tempUrl, { method: "HEAD" });
-        if (!headResponse.ok) throw new Error(`无法访问文件: ${headResponse.statusText}`);
-
-        const fileSize = parseInt(headResponse.headers.get("Content-Length"), 10);
-        console.log(`文件大小: ${fileSize} 字节`);
-
-        const totalChunks = Math.ceil(fileSize / CHUNK_SIZE);
-        console.log(`总分片数: ${totalChunks}`);
+        const fileSize = file.size;
+        const blockSize = 4 * 1024 * 1024 + 28;
+        const numBlocks = Math.ceil(fileSize / blockSize);
         const decryptedChunks = [];
 
-        for (let i = 0; i < totalChunks; i++) {
-          const start = i * CHUNK_SIZE;
-          const end = Math.min(start + CHUNK_SIZE - 1, fileSize - 1);
-          console.log(`下载分片 ${i + 1}/${totalChunks}, 范围: ${start}-${end}`);
+        for (let i = 0; i < numBlocks; i++) {
+          const start = i * blockSize;
+          const end = Math.min(start + blockSize, fileSize);
+          const block = file.slice(start, end);
+          if (block.size < 28) continue;
 
-          const response = await fetch(tempUrl, {
-            headers: { "Range": `bytes=${start}-${end}` },
-          });
-          if (!response.ok) throw new Error(`下载分片 ${i + 1} 失败: ${response.statusText}`);
-
-          const chunk = await response.blob();
-          console.log(`分片 ${i + 1} 下载完成，大小: ${chunk.size} 字节`);
-
-          const chunkSize = chunk.size;
-          const blockSize = 4 * 1024 * 1024 + 28;
-          const numBlocks = Math.ceil(chunkSize / blockSize);
-
-          for (let j = 0; j < numBlocks; j++) {
-            const blockStart = j * blockSize;
-            const blockEnd = Math.min(blockStart + blockSize, chunkSize);
-            const block = chunk.slice(blockStart, blockEnd);
-            if (block.size < 28) continue;
-
-            const decryptedBlock = await decryptChunk(block, keyBase64);
-            console.log(`分片 ${i + 1} 块 ${j + 1} 解密完成，大小: ${decryptedBlock.size} 字节`);
-            decryptedChunks.push(decryptedBlock);
-          }
+          const decryptedBlock = await decryptChunk(block, keyBase64);
+          console.log(`块 ${i + 1} 解密完成，大小: ${decryptedBlock.size} 字节`);
+          decryptedChunks.push(decryptedBlock);
         }
 
         const decryptedFile = new Blob(decryptedChunks);
@@ -95,18 +85,17 @@
         const downloadUrl = URL.createObjectURL(decryptedFile);
         const a = document.createElement("a");
         a.href = downloadUrl;
-        a.download = fileUrl.split("/").pop().replace(".enc", "");
+        a.download = file.name.replace(".enc", "");
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(downloadUrl);
 
-        resultElement.textContent = "文件下载并解密成功！";
+        resultElement.textContent = "文件解密成功！";
       } catch (error) {
         console.error("解密失败:", error.message);
         resultElement.textContent = `解密失败: ${error.message}`;
       }
-      downloadButton.disabled = false;
     }
   </script>
 </body>
