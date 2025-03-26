@@ -14,20 +14,21 @@
   <input type="file" id="fileInput" accept=".enc" onchange="decryptFile()" /><br><br>
   <p id="result"></p>
   <script>
+    const CHUNK_SIZE = 4 * 1024 * 1024 + 28; // 4MB + 12字节IV + 16字节标签
+
     async function decryptChunk(chunk, keyBase64) {
-      const keyBuffer = Uint8Array.from(atob(keyBase64), c => c.charCodeAt(0));
-      const key = await crypto.subtle.importKey(
-        "raw",
-        keyBuffer,
-        { name: "AES-GCM" },
-        false,
-        ["decrypt"]
-      );
-      const buffer = await chunk.arrayBuffer();
-      const iv = buffer.slice(0, 12);
-      const encryptedData = buffer.slice(12);
-      const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, encryptedData);
-      return new Blob([decrypted]);
+      try {
+        const keyBuffer = Uint8Array.from(atob(keyBase64), c => c.charCodeAt(0));
+        const key = await crypto.subtle.importKey("raw", keyBuffer, { name: "AES-GCM" }, false, ["decrypt"]);
+        const buffer = await chunk.arrayBuffer();
+        console.log(`块大小: ${buffer.byteLength} 字节`);
+        const iv = buffer.slice(0, 12);
+        const encryptedData = buffer.slice(12);
+        const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, encryptedData);
+        return new Blob([decrypted]);
+      } catch (error) {
+        throw new Error(`解密块失败: ${error.message}`);
+      }
     }
 
     function triggerDownload() {
@@ -41,7 +42,7 @@
 
       const a = document.createElement("a");
       a.href = tempUrl;
-      a.download = "fishfight-sprites (1).zip.enc"; // 默认文件名
+      a.download = "fishfight-sprites (1).zip.enc";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -61,18 +62,24 @@
 
       resultElement.textContent = "开始解密...";
       const file = fileInput.files[0];
+      const fileSize = file.size;
+      console.log(`文件大小: ${fileSize} 字节`);
 
       try {
-        const fileSize = file.size;
-        const blockSize = 4 * 1024 * 1024 + 28;
-        const numBlocks = Math.ceil(fileSize / blockSize);
+        const numBlocks = Math.ceil(fileSize / CHUNK_SIZE);
+        console.log(`总块数: ${numBlocks}`);
         const decryptedChunks = [];
 
         for (let i = 0; i < numBlocks; i++) {
-          const start = i * blockSize;
-          const end = Math.min(start + blockSize, fileSize);
+          const start = i * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE, fileSize);
           const block = file.slice(start, end);
-          if (block.size < 28) continue;
+          console.log(`处理块 ${i + 1}, 大小: ${block.size} 字节`);
+
+          if (block.size < 28) {
+            console.log(`块 ${i + 1} 太小，跳过`);
+            continue;
+          }
 
           const decryptedBlock = await decryptChunk(block, keyBase64);
           console.log(`块 ${i + 1} 解密完成，大小: ${decryptedBlock.size} 字节`);
